@@ -1,12 +1,15 @@
 from typing import List, Tuple, Optional, Union
 from typing_extensions import Literal
 import copy
+import matplotlib.pyplot as plt
 import plotly.express as px
 import plotly.graph_objects as go
 from functools import partial
 import numpy as np
 import pandas as pd
 import re
+import os
+import einops
 
 import torch
 from transformer_lens import HookedTransformer
@@ -315,12 +318,24 @@ def hist(tensor, renderer=None, **kwargs):
         fig.show(renderer=renderer, config=CONFIG_STATIC if static else CONFIG)
 
 
+def find_token_positions(words, highlights):
+    """Robust substring-based matching for highlight words."""
+    highlights_set = set(h.lower() for h in highlights)
+    token_hits = []
+    for i, tok in enumerate(words):
+        clean_tok = tok.strip("Ġ▁").lower()
+        if any(h in clean_tok for h in highlights_set):
+            token_hits.append(i)
+    return token_hits
+
 def show_attention_patterns(
     model: HookedTransformer,
     heads: List[Tuple[int, int]],
     prompts: List[str],
     precomputed_cache: Optional[ActivationCache] = None,
     mode: Union[Literal["val", "pattern", "scores"]] = "val",
+    highlight_words: list = None,
+    show_all_tokens: bool = True,
     title_suffix: Optional[str] = "",
     return_fig: bool = False,
     return_mtx: bool = False,
@@ -368,7 +383,9 @@ def show_attention_patterns(
         good_names.append(f"blocks.{layer}.attn.hook_pattern")  # (batch, head_index, query_pos, key_pos)
         good_names.append(f"blocks.{layer}.attn.hook_attn_scores")  # (batch, head_index, query_pos, key_pos)
         good_names.append(f"blocks.{layer}.attn.hook_z")  #  (batch, pos, head_index, d_head)
-        good_names.append(f"blocks.{layer}.hook_attn_out")   # (batch, )
+        good_names.append(f"blocks.{layer}.hook_attn_out") 
+        good_names.append(f"blocks.0.hook_resid_pre")   
+        good_names.append(f"blocks.0.hook_mlp_out")   
         
         # else:
         if precomputed_cache is None:
@@ -384,28 +401,46 @@ def show_attention_patterns(
                 (good_names[2], partial(hook_fn, name=good_names[2])), 
                 (good_names[3], partial(hook_fn, name=good_names[3])), 
                 (good_names[4], partial(hook_fn, name=good_names[4])), 
+                (good_names[5], partial(hook_fn, name=good_names[5])), 
+                (good_names[6], partial(hook_fn, name=good_names[6])), 
             ]
             model.run_with_hooks(prompts, fwd_hooks=fwd_hooks)
         else:
             cache = precomputed_cache
-         
-        attn_results = torch.zeros(
-            size=(len(prompts), len(prompts[0]), len(prompts[0]))
-        )
-        attn_results += -20
 
         # TODO: BOS token will be a problem for diagonal heads, 
         toks = model.to_tokens(prompts)
         # toks = utils.get_tokens_with_bos_removed(model.tokenizer, toks)
         current_length = len(toks)
+
         words = model.to_str_tokens(prompts)
         # print(f"Before trying to remove bos: {words}")
         # # if model.tokenizer.pad_token_id in toks: 
         
         # words = words[1:]
         # print(f"After trying to remove bos: {words}")
+        seq_len = toks.shape[1]
+ 
+        attn_results = torch.zeros(
+            size=(len(prompts), seq_len, seq_len), dtype=torch.float16
+        )
+        # attn_results += -20
         attn_pattern = cache[good_names[1]].detach().cpu()[:, head, :, :].squeeze(0)
         attn_scores = cache[good_names[2]].detach().cpu()[:, head, :, :].squeeze(0)
+
+        highlight_words = highlight_words or []
+        highlight_ids = find_token_positions(words, highlight_words)
+
+        # Regular subsampling ticks (quarter positions by default)
+        step = max(seq_len // 4, 1)
+        regular_ticks = list(range(0, seq_len, step))
+
+        # Combine + deduplicate
+        tickvals = sorted(set(highlight_ids + regular_ticks))
+
+        # Format: idx - word (if matched), else idx
+        ticktext = [f'{i}: "{words[i]}"' if i in highlight_ids else str(i) for i in tickvals]
+
         if mode == "val-weighted":
             if getattr(model.cfg, "ungroup_grouped_query_attention", True):
                 # n_heads == n_key_value_heads
@@ -420,67 +455,117 @@ def show_attention_patterns(
                 cont = attn_pattern * vals.unsqueeze(0)
 
         labels={"y": "Queries", "x": "Keys"}
-        # TODO: Plotting OV works only with the effective circuit
         if mode == "ov": 
-            # print(f"Shape of value: {cache[good_names[0]].shape}") # value
-            # print(f"Shape of attn_out: {cache[good_names[4]].shape}") # attn_out
-            # v_act = cache[good_names[0]].detach().cpu().squeeze(0)  # -> shape [seq, n_kv_heads, d_head]
-            # cont = cache[good_names[4]].detach().cpu().squeeze(0)  # -> shape [n_kv_heads, seq, d_head]
-            # if getattr(model.cfg, "n_key_value_heads"):
-            #     kv_group_size = model.cfg.n_heads // model.cfg.n_key_value_heads
-            #     kv_head = head // kv_group_size
+            W_OV = model.W_V[layer, head] @ model.W_O[layer, head]  
+            assert W_OV.shape == (model.cfg.d_model, model.cfg.d_model)
+            
+            resid_pre = cache[good_names[5]].detach() # -> shape [seq, d_model]
+            pre_attention = model.blocks[0].ln1(resid_pre)
+            attn_out = einops.einsum(
+                pre_attention, 
+                model.W_V[0],
+                model.W_O[0],
+                "b s d_model, num_heads d_model d_head, num_heads d_head d_model_out -> b s d_model_out",
+            )
+            resid_mid = attn_out + resid_pre
+            normalized_resid_mid = model.blocks[0].ln2(resid_mid)
+            mlp_out = model.blocks[0].mlp(normalized_resid_mid)
+            
+            W_EE = mlp_out.squeeze()
+            W_EE_full = resid_mid.squeeze() + mlp_out.squeeze()
 
-            #     # Extract single query head
-            #     v_act = v_act[:, head, :]  # (seq, d_head)
-            #     # Extract corresponding kv head
-            #     cont_head = cont[kv_head, :]  # (seq, d_head)
-            # else: 
-            #     kv_head = head
-            #     cont_head = cont[kv_head, :]
-            
-            # cont = v_act @ cont_head.T  # shapes [seq, d_head] x [d_head, seq] → [seq, seq]
-            
-            W_V_tmp, W_O_tmp = model.W_V[layer, head, :], model.W_O[layer, head]
-            tmp = model.W_E @ W_V_tmp @ W_O_tmp @ model.W_U
+            # compute the effective OV circuit
+            cont = W_EE @ W_OV @ model.W_U
 
             input_tokens = toks[0]  
             seq_len = input_tokens.shape[0]
-            cont = torch.zeros((seq_len, seq_len))
-
+            cont_tmp = torch.zeros((seq_len, seq_len))
+    
             for i in range(seq_len):
                 for j in range(seq_len):
-                    cont[i, j] = tmp[input_tokens[i], input_tokens[j]]
-            cont = cont.detach().cpu()
+                    cont_tmp[i, j] = cont[i, input_tokens[j]]
+            cont_tmp = cont_tmp.detach().cpu()
+            cont = cont_tmp
+            labels={"y": "Output Token", "x": "Source Token"}
+          
+        if seq_len < 100: 
+            fig = px.imshow(
+                attn_pattern if mode == "pattern" else attn_scores if mode == "scores" else cont,
+                title=f"{layer}.{head} Attention" + title_suffix if mode != "ov" else "Logits",
+                color_continuous_midpoint=0,
+                color_continuous_scale="RdBu" if mode != "ov" else "Viridis",
+                labels={"y": "Output Token", "x": "Source Token"} if mode == "ov" else labels,
+                height=600,
+            )
 
-            labels={"y": "Output Token", "x": "Source Token"},
-        
-        fig = px.imshow(
-            attn_pattern if mode == "pattern" else attn_scores if mode == "scores" else cont,
-            title=f"{layer}.{head} Attention" + title_suffix,
-            color_continuous_midpoint=0,
-            color_continuous_scale="RdBu",
-            labels=labels,
-            height=600,
-        )
+            if mode == "ov":
+                fig.update_layout(
+                    xaxis_title="Output Token",
+                    yaxis_title="Source Token",
+                    xaxis=dict(
+                        side="top", tickangle=45,
+                        ticktext=ticktext,
+                        tickvals=tickvals,
+                        tickfont=dict(size=15),
+                    ),
+                    yaxis=dict(
+                        ticktext=ticktext,
+                        tickvals=tickvals,
+                        tickfont=dict(size=15),
+                        autorange="reversed",
+                    ),
+                    width=800,
+                    height=650,
+                )
+            else:
+                fig.update_layout(
+                    xaxis=dict(
+                        side="top", tickangle=45,
+                        ticktext=ticktext,
+                        tickvals=tickvals,
+                        tickfont=dict(size=15),
+                    ),
+                    yaxis=dict(
+                        ticktext=ticktext,
+                        tickvals=tickvals,
+                        tickfont=dict(size=15),
+                    ),
+                    width=800,
+                    height=650,
+                )
+        else:
+            fig, ax = plt.subplots(figsize=(10, 8))
+            im = ax.imshow(attn_pattern, cmap="viridis", aspect="auto")
 
-        fig.update_layout(
-            xaxis={
-            "side": "top",
-            "ticktext": words,
-            "tickvals": list(range(len(words))),
-            "tickfont": dict(size=15),
-            },
-            yaxis={
-            "ticktext": words,
-            "tickvals": list(range(len(words))),
-            "tickfont": dict(size=15),
-            },
-            width=800, 
-            height=650,
-        )
+            ax.set_title(f"{layer}.{head} Attention" + title_suffix)
+            ax.set_xlabel("Key Position")
+            ax.set_ylabel("Query Position")
+
+            ax.set_xticks(tickvals)
+            ax.set_xticklabels(ticktext, rotation=90, fontsize=8)
+            ax.set_yticks(tickvals)
+            ax.set_yticklabels(ticktext, fontsize=8)
+
+            plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="Attention")
+            plt.tight_layout()
+            plt.show()
+
         if return_fig and not return_mtx:
-            return fig
+            # # Only return the figure
+            # if toks.shape[1] > 100:
+            #     print(f"Sequence length = {toks.shape[1]} too large for interactive plot. Saving figure...")
+            #     fig_path = f"figures/attention_layer{layer}_head{head}.png"
+            #     if hasattr(fig, "write_image"):
+            #         fig.write_image(fig_path)
+            #     else:
+            #         fig.savefig(fig_path)
+            #         plt.close(fig)
+            #     print(f"Saved to: {os.path.abspath(fig_path)}")
+            # else:
+                fig.show()
+
         elif return_mtx and not return_fig:
+            # Return raw matrix
             if mode == "val-weighted":
                 return cont
             elif mode == "pattern":
@@ -491,10 +576,9 @@ def show_attention_patterns(
                 attn_results[:, :current_length, :current_length] = (
                     attn_scores[:current_length, :current_length].clone().cpu()
                 )
-        else:
-            fig.show()
-
-        if return_fig and not return_mtx:
-            return fig
-        elif return_mtx and not return_fig:
+            elif mode == "ov":
+                attn_results[:, :current_length, :current_length] = (
+                    cont[:current_length, :current_length].clone().cpu()
+                )
             return attn_results
+        
