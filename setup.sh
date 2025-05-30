@@ -13,4 +13,7 @@ PYVER=$(python -c "import sys; print(f'{sys.version_info.major}.{sys.version_inf
 # Navigate to the PySvelte build directory
 cd ~/.conda/envs/RoPE/lib/python${PYVER}/site-packages/pysvelte/svelte
 # Rebuild
+
+npm install
+
 npm run webpack

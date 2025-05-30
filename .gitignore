@@ -1,4 +1,4 @@
-data/__pycache__/*
+data/__pycache__
 data/succession_augmented.json
 data/ioi_dataset.py
 utils/__pycache__/*
@@ -6,4 +6,7 @@ utils/path_patching.py
 utils/direct_logit_attribution.py
 garbage/*
 figures/*
-notebooks/
+node_modules/
+model/
+package.json
+package-lock.json
