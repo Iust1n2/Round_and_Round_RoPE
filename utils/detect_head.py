@@ -1,7 +1,7 @@
 """Head Detector.
 
 Utilities for detecting specific types of heads (e.g. previous token heads). 
-Script taken from transformer-lens (https://github.com/TransformerLensOrg/TransformerLens) and adapted to compute the similarity score between the attention pattern (QK) of a head and a diagonal pattern.
+Script taken from transformer-lens (https://github.com/TransformerLensOrg/TransformerLens) and adapted to compute the similarity score between the attention pattern (QK) of a head and other types of patterns, e.g. diagonal head, last sucessor head.
 """
 
 import logging
@@ -16,7 +16,7 @@ from transformer_lens.ActivationCache import ActivationCache
 from transformer_lens.HookedTransformer import HookedTransformer
 from transformer_lens.utils import is_lower_triangular, is_square
 
-HeadName = Literal["previous_token_head", "duplicate_token_head", "induction_head", "diagonal_head"]
+HeadName = Literal["previous_token_head", "duplicate_token_head", "induction_head", "diagonal_head", "last_successor_head"]
 HEAD_NAMES = cast(List[HeadName], get_args(HeadName))
 ErrorMeasure = Literal["abs", "mul"]
 
@@ -116,10 +116,27 @@ def detect_head(
         if isinstance(seq, list):
             batch_scores = [detect_head(model, seq, detection_pattern) for seq in seq]
             return torch.stack(batch_scores).mean(0)
-        detection_pattern = cast(
-            torch.Tensor,
-            eval(f"get_{detection_pattern}_detection_pattern(tokens.cpu())"),
-        ).to(cfg.device)
+
+        if detection_pattern == "last_successor_head":
+            if not isinstance(seq, str):
+                raise ValueError(
+                    "For 'last_successor_head', seq must be a string, not a list of strings."
+                )
+            str_tokens = model.to_str_tokens(tokens)
+            detection_pattern = cast(
+                torch.Tensor,
+                eval(f"get_{detection_pattern}_detection_pattern(tokens.cpu(), str_tokens)"),
+            ).to(cfg.device)
+        else:
+            # for all other named patterns
+            detection_pattern = cast(
+                torch.Tensor,
+                eval(f"get_{detection_pattern}_detection_pattern(tokens.cpu())"),
+            ).to(cfg.device)
+        # detection_pattern = cast(
+        #     torch.Tensor,
+        #     eval(f"get_{detection_pattern}_detection_pattern(tokens.cpu())"),
+        # ).to(cfg.device)
 
     # if we're using "mul", detection_pattern should consist of zeros and ones
     if error_measure == "mul" and not set(detection_pattern.unique().tolist()).issubset({0, 1}):
@@ -150,6 +167,10 @@ def detect_head(
     for layer, layer_heads in layer2heads.items():
         # [n_heads q_pos k_pos]
         layer_attention_patterns = cache["pattern", layer, "attn"]
+        
+        if layer_attention_patterns.ndim != 3:
+            layer_attention_patterns = layer_attention_patterns.squeeze(0)
+
         for head in layer_heads:
             head_attention_pattern = layer_attention_patterns[head, :, :]
             head_score = compute_head_attention_similarity_score(
@@ -226,6 +247,35 @@ def get_induction_head_detection_pattern(
     zeros_column = torch.zeros(duplicate_pattern.shape[0], 1)
     result_tensor = torch.cat((zeros_column, shifted_tensor[:, 1:]), dim=1)
     return torch.tril(result_tensor)
+
+# Last successor head
+def get_last_successor_head_detection_pattern(
+    tokens: torch.Tensor,  # [batch (1) x pos]
+    str_tokens: Optional[List[str]] = None,  # The sequence of tokens as a string
+) -> torch.Tensor:
+    """
+    Given token IDs `tokens` for a prompt of the form
+      "The last number in the sequence 1 2 … 20 is ",
+    build a [seq_len×seq_len] lower-triangular detection pattern with a 1.0
+    at (q_pos, k_pos) where q_pos is the index of the "is" token and
+    k_pos is the index of the last numeric token.
+    """
+    seq_len = tokens.shape[-1]
+    
+    # we query at the last token
+    q_pos = seq_len - 1
+
+    # find the last numeric token in str_tokens
+    num_positions = [i for i, tok in enumerate(str_tokens) if tok.strip().isdigit()]
+    if not num_positions:
+        raise ValueError("No numeric tokens found in prompt")
+    k_pos = num_positions[-1]
+    print(f"Last numeric token for query token {str_tokens[q_pos]} is at position {k_pos}, {str_tokens[k_pos]} in the prompt.")
+
+    # build the pattern matrix, if q_pos and k_pos are the same, we return a matrix with 1 at (q_pos, k_pos)
+    pat = torch.zeros(seq_len, seq_len, device=tokens.device)
+    pat[q_pos, k_pos] = 1.0
+    return torch.tril(pat)
 
 def get_supported_heads() -> None:
     """Returns a list of supported heads."""

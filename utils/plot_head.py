@@ -407,8 +407,7 @@ def show_attention_patterns(
             model.run_with_hooks(prompts, fwd_hooks=fwd_hooks)
         else:
             cache = precomputed_cache
-
-        # TODO: BOS token will be a problem for diagonal heads, 
+        # TODO: BOS token will be a problem for diagonal heads, and sometimes overriding model.cfg.default_prepend_bos doesn't work, so do manually
         toks = model.to_tokens(prompts)
         # toks = utils.get_tokens_with_bos_removed(model.tokenizer, toks)
         current_length = len(toks)
@@ -431,15 +430,20 @@ def show_attention_patterns(
         highlight_words = highlight_words or []
         highlight_ids = find_token_positions(words, highlight_words)
 
-        # Regular subsampling ticks (quarter positions by default)
-        step = max(seq_len // 4, 1)
-        regular_ticks = list(range(0, seq_len, step))
+        if not show_all_tokens:
+            # Regular subsampling ticks (quarter positions by default)
+            step = max(seq_len // 4, 1)
+            regular_ticks = list(range(0, seq_len, step))
+            # Combine + deduplicate
+            tickvals = sorted(set(highlight_ids + regular_ticks))
 
-        # Combine + deduplicate
-        tickvals = sorted(set(highlight_ids + regular_ticks))
-
-        # Format: idx - word (if matched), else idx
-        ticktext = [f'{i}: "{words[i]}"' if i in highlight_ids else str(i) for i in tickvals]
+            # Format: idx - word (if matched), else idx
+            ticktext = [f'{i}: "{words[i]}"' if i in highlight_ids else str(i) for i in tickvals]
+        else:
+            # Show all tokens
+            regular_ticks = words
+            tickvals = list(range(seq_len))
+            ticktext = [f"{words[i]}" for i in range(seq_len)]
 
         if mode == "val-weighted":
             if getattr(model.cfg, "ungroup_grouped_query_attention", True):
@@ -506,12 +510,12 @@ def show_attention_patterns(
                         side="top", tickangle=45,
                         ticktext=ticktext,
                         tickvals=tickvals,
-                        tickfont=dict(size=15),
+                        tickfont=dict(size=11),
                     ),
                     yaxis=dict(
                         ticktext=ticktext,
                         tickvals=tickvals,
-                        tickfont=dict(size=15),
+                        tickfont=dict(size=11),
                         autorange="reversed",
                     ),
                     width=800,
@@ -523,12 +527,12 @@ def show_attention_patterns(
                         side="top", tickangle=45,
                         ticktext=ticktext,
                         tickvals=tickvals,
-                        tickfont=dict(size=15),
+                        tickfont=dict(size=11),
                     ),
                     yaxis=dict(
                         ticktext=ticktext,
                         tickvals=tickvals,
-                        tickfont=dict(size=15),
+                        tickfont=dict(size=11),
                     ),
                     width=800,
                     height=650,
@@ -551,7 +555,7 @@ def show_attention_patterns(
             plt.show()
 
         if return_fig and not return_mtx:
-            # # Only return the figure
+            # NOTE: this was temporary for when trying to plot a big seq ~ ctx_len
             # if toks.shape[1] > 100:
             #     print(f"Sequence length = {toks.shape[1]} too large for interactive plot. Saving figure...")
             #     fig_path = f"figures/attention_layer{layer}_head{head}.png"

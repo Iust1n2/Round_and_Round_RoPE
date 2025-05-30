@@ -1,4 +1,5 @@
-from typing import Tuple
+import json
+from typing import List, Dict, Tuple
 
 def generate_successor_pairs() -> Tuple[dict, dict]:
     """
@@ -72,3 +73,87 @@ def create_prompt(succession_dataset: dict) -> dict:
         task: " ".join(tokens) for task, tokens in succession_dataset.items()
     }
     return task_prompts
+
+def create_flipped_prompt(succession_dataset: dict) -> dict:
+    """
+    Converts the succession dataset into a single string for each task.
+
+    Args:
+        succession_dataset (dict): The succession dataset with tokens for each task.
+
+    Returns:
+        dict: A dictionary with tasks as keys and their corresponding tokens as a single string.
+    """
+    task_prompts = {
+        task: " ".join(tokens[::-1]) for task, tokens in succession_dataset.items()
+    }
+    return task_prompts
+
+
+def create_augmented_prompts(
+    task_prompts: Dict[str, str],
+    flipped_task_prompts: Dict[str, str]
+) -> List[Dict[str, str]]:
+    """
+    Creates clean/corrupt prompt pairs using next elements as answers from original and flipped.
+
+    Args:
+        task_prompts: Forward-order task prompt strings.
+        flipped_task_prompts: Reverse-order task prompt strings.
+
+    Returns:
+        List of prompt dicts with clean/corrupt formatting.
+    """
+    augmented = []
+    for task_name, flipped_task_name in zip(task_prompts, flipped_task_prompts):
+        # Tokenize forward and flipped prompts
+        prompt_tokens = task_prompts[task_name].split()
+        flipped_tokens = flipped_task_prompts[flipped_task_name].split()
+
+        if len(prompt_tokens) < 2 or len(flipped_tokens) < 2:
+            continue
+
+        # Extract the correct answer and wrong answer (next tokens)
+        correct_answer = prompt_tokens[-1]
+        wrong_answer = flipped_tokens[-1]
+
+        # Build the shared prompt
+        aug_clean_prompt = f"The next item in the sequence {' '.join(prompt_tokens[:-1])} is"
+        aug_corrupt_prompt = f"The next item in the sequence {' '.join(flipped_tokens[:-1])} is"
+
+        item = {
+            "task": task_name,
+            "clean": aug_clean_prompt,
+            "corrupt": aug_corrupt_prompt,
+            "answers": [f" {correct_answer}"],
+            "wrong_answers": [f" {wrong_answer}"]
+        }
+        augmented.append(item)
+
+    return augmented
+
+def to_json_format(augmented_data: List[Dict[str, str]], save_path: str = None) -> str:
+    """
+    Converts augmented data to a JSON string following a specific format.
+
+    Args:
+        augmented_data (List[Dict]): List with clean/corrupt/answers/wrong_answers.
+        save_path (str, optional): If provided, saves JSON to file.
+
+    Returns:
+        str: JSON string of the dataset.
+    """
+    # Remove "task" key before output
+    output_data = [
+        {k: v for k, v in item.items() if k != "task"}
+        for item in augmented_data
+    ]
+
+    json_str = json.dumps({"prompts": output_data}, indent=2)
+    # Save to file if save_path is provided
+    if save_path:
+        with open(save_path, "w") as f:
+            f.write(json_str)
+    
+
+    return json_str
