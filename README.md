@@ -14,3 +14,17 @@ Then install the required dependencies (including PySvelte and fixing a bug on d
 ```shell
 bash setup.sh
 ```
+
+
+## Training our model
+
+In order to use our model, you first need to *train* the _tokenizer_ and the _model_. To train the tokenizer, run the following command:
+```
+python train_tokenizer.py
+```
+
+Afterwards, train the model using:
+
+```
+python train_model.py
+```
