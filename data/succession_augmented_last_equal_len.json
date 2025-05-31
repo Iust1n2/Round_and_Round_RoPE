@@ -1,0 +1,150 @@
+{
+  "seq_labels": [
+    "the",
+    "last",
+    "term",
+    "in",
+    "the",
+    "sequence",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "is"
+  ],
+  "prompts": [
+    {
+      "clean": "the last term in the sequence 1 2 3 4 5 6 7 is",
+      "corrupt": "the last term in the sequence 20 19 18 17 16 15 14 is",
+      "answers": [
+        "7"
+      ],
+      "wrong_answers": [
+        "14"
+      ]
+    },
+    {
+      "clean": "the last term in the sequence one two three four five six seven is",
+      "corrupt": "the last term in the sequence twenty nineteen eighteen seventeen sixteen fifteen fourteen is",
+      "answers": [
+        "seven"
+      ],
+      "wrong_answers": [
+        "fourteen"
+      ]
+    },
+    {
+      "clean": "the last term in the sequence first second third fourth fifth sixth seventh is",
+      "corrupt": "the last term in the sequence twentieth nineteenth eighteenth seventeenth sixteenth fifteenth fourteenth is",
+      "answers": [
+        "seventh"
+      ],
+      "wrong_answers": [
+        "fourteenth"
+      ]
+    },
+    {
+      "clean": "the last term in the sequence Monday Tuesday Wednesday Thursday Friday Saturday Sunday is",
+      "corrupt": "the last term in the sequence Sunday Saturday Friday Thursday Wednesday Tuesday Monday is",
+      "answers": [
+        "Sunday"
+      ],
+      "wrong_answers": [
+        "Monday"
+      ]
+    },
+    {
+      "clean": "the last term in the sequence Mon Tue Wed Thu Fri Sat Sun is",
+      "corrupt": "the last term in the sequence Sun Sat Fri Thu Wed Tue Mon is",
+      "answers": [
+        "Sun"
+      ],
+      "wrong_answers": [
+        "Mon"
+      ]
+    },
+    {
+      "clean": "the last term in the sequence January February March April May June July is",
+      "corrupt": "the last term in the sequence December November October September August July June is",
+      "answers": [
+        "July"
+      ],
+      "wrong_answers": [
+        "June"
+      ]
+    },
+    {
+      "clean": "the last term in the sequence Jan Feb Mar Apr May Jun Jul is",
+      "corrupt": "the last term in the sequence Dec Nov Oct Sep Aug Jul Jun is",
+      "answers": [
+        "Jul"
+      ],
+      "wrong_answers": [
+        "Jun"
+      ]
+    },
+    {
+      "clean": "the last term in the sequence I II III IV V VI VII is",
+      "corrupt": "the last term in the sequence XX XIX XVIII XVII XVI XV XIV is",
+      "answers": [
+        "VII"
+      ],
+      "wrong_answers": [
+        "XIV"
+      ]
+    },
+    {
+      "clean": "the last term in the sequence 0 1 1 2 3 5 8 is",
+      "corrupt": "the last term in the sequence 144 89 55 34 21 13 8 is",
+      "answers": [
+        "8"
+      ],
+      "wrong_answers": [
+        "8"
+      ]
+    },
+    {
+      "clean": "the last term in the sequence 2 4 6 8 10 12 14 is",
+      "corrupt": "the last term in the sequence 40 38 36 34 32 30 28 is",
+      "answers": [
+        "14"
+      ],
+      "wrong_answers": [
+        "28"
+      ]
+    },
+    {
+      "clean": "the last term in the sequence 1 2 4 8 16 32 64 is",
+      "corrupt": "the last term in the sequence 1024 512 256 128 64 32 16 is",
+      "answers": [
+        "64"
+      ],
+      "wrong_answers": [
+        "16"
+      ]
+    },
+    {
+      "clean": "the last term in the sequence a b c d e f g is",
+      "corrupt": "the last term in the sequence z y x w v u t is",
+      "answers": [
+        "g"
+      ],
+      "wrong_answers": [
+        "t"
+      ]
+    },
+    {
+      "clean": "the last term in the sequence Hydrogen Helium Lithium Beryllium Boron Carbon Nitrogen is",
+      "corrupt": "the last term in the sequence Calcium Potassium Argon Chlorine Sulfur Phosphorus Silicon is",
+      "answers": [
+        "Nitrogen"
+      ],
+      "wrong_answers": [
+        "Silicon"
+      ]
+    }
+  ]
+}

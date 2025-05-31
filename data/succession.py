@@ -1,6 +1,7 @@
 import json
 from .data_template import succession_dataset
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Union, Optional, Literal
+from transformers import PreTrainedTokenizer, AutoTokenizer
 
 
 def generate_successor_pairs() -> Tuple[dict, dict]:
@@ -87,8 +88,50 @@ def create_flipped_prompt(succession_dataset: dict) -> dict:
     return task_prompts
 
 
+def truncate_prompts_to_min_length(
+    task_prompts: Dict[str, str],
+    flipped_task_prompts: Dict[str, str],
+    tokenizer: Optional[Union[PreTrainedTokenizer, AutoTokenizer]] = None,
+    max_tokens: int = None,
+) -> Tuple[Dict[str, str], Dict[str, str]]:
+    """
+    Truncates both forward and flipped task prompts to the same minimum tokenized length
+    across all tasks. Returns truncated prompt dictionaries.
+
+    Args:
+        task_prompts: Dict of forward-order task prompts (task -> string).
+        flipped_task_prompts: Dict of reverse-order task prompts (task -> string).
+        tokenizer: HuggingFace tokenizer used to tokenize prompts.
+        max_tokens: Optional override to truncate all to a fixed number of tokens
+                    (must be <= shortest sequence length across tasks).
+
+    Returns:
+        Tuple of (truncated_task_prompts, truncated_flipped_task_prompts)
+    """
+    # Compute lengths of tokenized prompts
+    lengths = {
+        task: len(tokenizer.encode(prompt, add_special_tokens=False))
+        for task, prompt in task_prompts.items()
+    }
+
+    # Get the minimum length
+    min_len = min(lengths.values())
+    if max_tokens is not None:
+        min_len = min(min_len, max_tokens)
+
+    # Truncate both task_prompts and flipped_task_prompts to min_len
+    def truncate(prompt: str) -> str:
+        return " ".join(prompt.split()[:min_len])
+
+    truncated_forward = {task: truncate(prompt) for task, prompt in task_prompts.items()}
+    truncated_flipped = {
+        task: truncate(prompt) for task, prompt in flipped_task_prompts.items()
+    }
+
+    return truncated_forward, truncated_flipped
+
 def create_augmented_prompts(
-    task_prompts: Dict[str, str], flipped_task_prompts: Dict[str, str]
+    tokenizer, task_prompts: Dict[str, str], flipped_task_prompts: Dict[str, str], truncate: bool = False,  which_task: Literal['next', 'last'] = None, 
 ) -> List[Dict[str, str]]:
     """
     Creates clean/corrupt prompt pairs using next elements as answers from original and flipped.
@@ -96,37 +139,59 @@ def create_augmented_prompts(
     Args:
         task_prompts: Forward-order task prompt strings.
         flipped_task_prompts: Reverse-order task prompt strings.
-
+        truncate: If True, truncates prompts to a minimum length.
     Returns:
         List of prompt dicts with clean/corrupt formatting.
     """
     augmented = []
     for task_name, flipped_task_name in zip(task_prompts, flipped_task_prompts):
         # Tokenize forward and flipped prompts
-        prompt_tokens = task_prompts[task_name].split()
-        flipped_tokens = flipped_task_prompts[flipped_task_name].split()
+        if truncate:
+            prompt_tokens, flipped_tokens = truncate_prompts_to_min_length(
+                task_prompts,
+                flipped_task_prompts,
+                tokenizer=tokenizer, 
+                    max_tokens=32  # Optional: override to force 32 tokens
+            )
+            prompt_tokens = prompt_tokens[task_name].split()
+            flipped_tokens = flipped_tokens[flipped_task_name].split()
+            
+        else: 
+            prompt_tokens = task_prompts[task_name].split()
+            flipped_tokens = flipped_task_prompts[flipped_task_name].split()
 
         if len(prompt_tokens) < 2 or len(flipped_tokens) < 2:
             continue
 
-        # Extract the correct answer and wrong answer (next tokens)
-        correct_answer = prompt_tokens[-1]
-        wrong_answer = flipped_tokens[-1]
 
         # Build the shared prompt
-        aug_clean_prompt = (
-            f"The next item in the sequence {' '.join(prompt_tokens[:-1])} is"
-        )
-        aug_corrupt_prompt = (
-            f"The next item in the sequence {' '.join(flipped_tokens[:-1])} is"
-        )
-
+        if which_task == 'next':
+            aug_clean_prompt = (
+                f"the next term in the sequence {' '.join(prompt_tokens[:-1])} is"
+            )
+            aug_corrupt_prompt = (
+                f"the next term in the sequence {' '.join(flipped_tokens[:-1])} is"
+            )
+            # Extract the correct answer and wrong answer (next tokens)
+            correct_answer = prompt_tokens[-1]
+            wrong_answer = flipped_tokens[-1]
+        
+        elif which_task == 'last':
+            aug_clean_prompt = (
+                f"the last term in the sequence {' '.join(prompt_tokens)} is"
+            )
+            aug_corrupt_prompt = (
+                f"the last term in the sequence {' '.join(flipped_tokens)} is"
+            )
+            correct_answer = prompt_tokens[-1]
+            wrong_answer = flipped_tokens[-1]
+    
         item = {
             "task": task_name,
             "clean": aug_clean_prompt,
             "corrupt": aug_corrupt_prompt,
-            "answers": [f" {correct_answer}"],
-            "wrong_answers": [f" {wrong_answer}"],
+            "answers": [f"{correct_answer}"], 
+            "wrong_answers": [f"{wrong_answer}"],
         }
         augmented.append(item)
 
