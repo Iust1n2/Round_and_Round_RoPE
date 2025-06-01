@@ -10,6 +10,10 @@ from auto_circuit.utils.patchable_model import PatchableModel
 from auto_circuit.utils.misc import repo_path_to_abs_path
 from auto_circuit.visualize import draw_seq_graph
 
+from PIL import Image
+import matplotlib.pyplot as plt
+import os
+
 
 def auto_circuit_experiment(model: HookedTransformer, device: str = "cuda", save_path: str = None) -> None:
     """
@@ -131,7 +135,7 @@ def get_real_edges(auto_model: PatchableModel, attribution_scores: PruneScores, 
             print(f"  • {e.src.name} → {e.dest.name}:   score={s:.2f}")
     
     if return_edges:
-        return real_edges_sorted
+        return real_edges_sorted, len(real_edges_sorted)
 
 
 def compute_circuit_overlap(
@@ -280,3 +284,49 @@ def compute_circuit_overlap(
         "node_union":        node_union,
         "node_jaccard":      node_jaccard,
     }
+
+
+def save_comparison_plot(path_A, path_B, remaining_edges_A, remaining_edges_B, output_path, dpi=600):
+    data = {
+        'Circuit A': {
+            'edges': remaining_edges_A,
+            'path': path_A,
+        },
+        'Circuit B': {
+            'edges': remaining_edges_B, 
+            'path': path_B,
+        }
+    }
+    base_img = Image.open(data['Circuit A']['path'])
+    ablated_img = Image.open(data['Circuit B']['path'])
+
+    # Resize with high-quality interpolation
+    target_size = (1300, 1300)
+    base_img_resized = base_img.resize(target_size, Image.Resampling.LANCZOS)
+    ablated_img_resized = ablated_img.resize(target_size, Image.Resampling.LANCZOS)
+
+    # Create larger figure with higher DPI
+    plt.rcParams['figure.dpi'] = 300
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
+
+    # Plot images with captions
+    ax1.imshow(base_img_resized)
+    ax1.set_xlabel(f'Circuit A\n({data["Circuit A"]["edges"]} edges)')
+    ax1.set_xticks([])
+    ax1.set_yticks([])
+
+    ax2.imshow(ablated_img_resized)
+    ax2.set_xlabel(f'Circuit B\n({data["Circuit B"]["edges"]} edges)')
+    ax2.set_xticks([])
+    ax2.set_yticks([])
+
+    # Save based on file extension
+    plt.tight_layout()
+    ext = os.path.splitext(output_path)[1].lower()
+    
+    if ext == '.svg':
+        plt.savefig(output_path, format='svg', bbox_inches='tight')
+    else:
+        plt.savefig(output_path, dpi=dpi, bbox_inches='tight')
+    
+    plt.close()
