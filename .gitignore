@@ -2,7 +2,7 @@ auto_circuit_exps/*
 data/__pycache__
 data/succession_augmented.json
 data/ioi_dataset.py
-/data/*.json
+# /data/*.json
 !data/succession_augmented_last_equal_len.json
 !data/succession_augmented_next_equal_len.json
 utils/__pycache__/*
