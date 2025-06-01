@@ -53,6 +53,9 @@ def main(params, use_wandb):
     last_train_loader = DataLoader(
         last_train_data, batch_size=params.batch_size, shuffle=True, collate_fn=collate
     )
+    full_train_loader = DataLoader(
+        train_data, batch_size=params.batch_size, shuffle=True, collate_fn=collate
+    )
 
     val_loader = DataLoader(
         val_data, batch_size=params.batch_size, shuffle=False, collate_fn=collate
@@ -155,6 +158,17 @@ def main(params, use_wandb):
                 f"Epoch {epoch+1} | Phase {phase}: Loss = {avg_phase_loss:.4f}, LogitDiff = {avg_phase_logit_diff:.4f}"
             )
 
+        train_acc = compute_accuracy(model, full_train_loader, tokenizer, DEVICE)
+        print(f"Epoch {epoch+1} | Train Accuracy {train_acc:.4f}")
+
+        if use_wandb:
+            wandb.log(
+                {
+                    "epoch": epoch + 1,
+                    "train/accuracy": train_acc,
+                }
+            )
+
         # --- Validation ---
         model.eval()
         val_loss, val_logit_diff = 0, 0
@@ -185,7 +199,9 @@ def main(params, use_wandb):
                 }
             )
 
-        # TODO: ALSO PRINT ACC SHIT
+        print(
+            f"Epoch {epoch+1} | Val Loss {avg_val_loss:.4f}, Val Accuracy {val_acc:.4f}, Val LogitDiff {avg_val_logit_diff:.4f}"
+        )
 
         avg_train_loss = (total_loss_A + total_loss_B) / (
             len(last_train_loader) + len(next_train_loader)
