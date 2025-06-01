@@ -12,5 +12,6 @@ garbage/*
 figures/*
 node_modules/
 model/
+wandb/
 package.json
 package-lock.json
