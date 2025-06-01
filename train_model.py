@@ -1,7 +1,6 @@
 import os
 import json
 import torch
-import wandb
 import argparse
 import importlib.util
 from random import seed
@@ -25,12 +24,12 @@ seed(SEED)
 torch.manual_seed(SEED)
 
 
-def main(mps):
+def main(params, use_wandb):
     tokens_seen = 0  # Global token counter
-    tokenizer = PreTrainedTokenizerFast.from_pretrained(mps.tokenizer_dir)
+    tokenizer = PreTrainedTokenizerFast.from_pretrained(params.tokenizer_dir)
     vocab_size = tokenizer.vocab_size
 
-    dataset = load_dataset(mps.data_path, tokenizer)
+    dataset = load_dataset(params.data_path, tokenizer)
 
     train_size = int(0.8 * len(dataset))
     val_size = len(dataset) - train_size
@@ -49,52 +48,55 @@ def main(mps):
         return padded.to(DEVICE), labels.to(DEVICE)
 
     next_train_loader = DataLoader(
-        next_train_data, batch_size=mps.batch_size, shuffle=True, collate_fn=collate
+        next_train_data, batch_size=params.batch_size, shuffle=True, collate_fn=collate
     )
     last_train_loader = DataLoader(
-        last_train_data, batch_size=mps.batch_size, shuffle=True, collate_fn=collate
+        last_train_data, batch_size=params.batch_size, shuffle=True, collate_fn=collate
     )
 
     val_loader = DataLoader(
-        val_data, batch_size=mps.batch_size, shuffle=False, collate_fn=collate
+        val_data, batch_size=params.batch_size, shuffle=False, collate_fn=collate
     )
 
     config = HookedTransformerConfig(
-        n_layers=mps.n_layers,
-        n_heads=mps.n_heads,
-        d_model=mps.d_model,
-        d_head=mps.d_head,
-        d_mlp=mps.d_mlp if hasattr(mps, "d_mlp") else None,
+        n_layers=params.n_layers,
+        n_heads=params.n_heads,
+        d_model=params.d_model,
+        d_head=params.d_head,
+        d_mlp=params.d_mlp if hasattr(params, "d_mlp") else None,
         d_vocab=vocab_size,
-        n_ctx=mps.n_ctx,
-        act_fn=mps.act_fn,
-        normalization_type=mps.normalization_type,
-        attn_only=mps.attn_only,
-        use_attn_result=mps.use_attn_result,
-        positional_embedding_type=mps.positional_embedding_type,
-        rotary_base=mps.rotary_base if hasattr(mps, "rotary_base") else None,
+        n_ctx=params.n_ctx,
+        act_fn=params.act_fn,
+        normalization_type=params.normalization_type,
+        attn_only=params.attn_only,
+        use_attn_result=params.use_attn_result,
+        positional_embedding_type=params.positional_embedding_type,
+        rotary_base=params.rotary_base if hasattr(params, "rotary_base") else None,
     )
 
     model = HookedTransformer(config).to(DEVICE)
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=mps.learning_rate)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=params.learning_rate)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=2, gamma=0.8)
     loss_fn = torch.nn.CrossEntropyLoss(ignore_index=tokenizer.pad_token_id)
 
-    wandb.init(
-        project=mps.project_name,
-        name=mps.run_name,
-        config={
-            "epochs": mps.epochs,
-            "batch_size": mps.batch_size,
-            "lr": mps.learning_rate,
-            "tokenizer": mps.tokenizer_dir,
-            **clean_config_dict(model.cfg.to_dict()),
-        },
-    )
+    if use_wandb:
+        import wandb
+
+        wandb.init(
+            project=params.project_name,
+            name=params.run_name,
+            config={
+                "epochs": params.epochs,
+                "batch_size": params.batch_size,
+                "lr": params.learning_rate,
+                "tokenizer": params.tokenizer_dir,
+                **clean_config_dict(model.cfg.to_dict()),
+            },
+        )
 
     print("Starting training...")
-    for epoch in range(mps.epochs):
+    for epoch in range(params.epochs):
         total_loss_A = total_loss_B = 0
         total_logit_diff_A = total_logit_diff_B = 0
 
@@ -136,15 +138,16 @@ def main(mps):
                     total_loss_B = phase_loss
                     total_logit_diff_B = phase_logit_diff
 
-                wandb.log(
-                    {
-                        "tokens_seen": tokens_seen,
-                        f"train/loss_{phase}": loss.item(),
-                        f"train/logit_diff_{phase}": logit_diff,
-                        "epoch": epoch + 1,
-                        "train/phase": phase,
-                    }
-                )
+                if use_wandb:
+                    wandb.log(
+                        {
+                            "tokens_seen": tokens_seen,
+                            f"train/loss_{phase}": loss.item(),
+                            f"train/logit_diff_{phase}": logit_diff,
+                            "epoch": epoch + 1,
+                            "train/phase": phase,
+                        }
+                    )
 
             avg_phase_loss = phase_loss / len(train_loader)
             avg_phase_logit_diff = phase_logit_diff / len(train_loader)
@@ -172,14 +175,17 @@ def main(mps):
         avg_val_logit_diff = val_logit_diff / len(val_loader)
         val_acc = compute_accuracy(model, val_loader, tokenizer, DEVICE)
 
-        wandb.log(
-            {
-                "epoch": epoch + 1,
-                "val/loss": avg_val_loss,
-                "val/accuracy": val_acc,
-                "val/logit_diff": avg_val_logit_diff,
-            }
-        )
+        if use_wandb:
+            wandb.log(
+                {
+                    "epoch": epoch + 1,
+                    "val/loss": avg_val_loss,
+                    "val/accuracy": val_acc,
+                    "val/logit_diff": avg_val_logit_diff,
+                }
+            )
+
+        # TODO: ALSO PRINT ACC SHIT
 
         avg_train_loss = (total_loss_A + total_loss_B) / (
             len(last_train_loader) + len(next_train_loader)
@@ -188,26 +194,27 @@ def main(mps):
             len(last_train_loader) + len(next_train_loader)
         )
 
-        wandb.log(
-            {
-                "epoch": epoch + 1,
-                "train/avg_loss": avg_train_loss,
-                "train/avg_logit_diff": avg_train_logit_diff,
-            }
-        )
+        if use_wandb:
+            wandb.log(
+                {
+                    "epoch": epoch + 1,
+                    "train/avg_loss": avg_train_loss,
+                    "train/avg_logit_diff": avg_train_logit_diff,
+                }
+            )
         scheduler.step()
 
     # Save directory
-    Path(mps.save_dir).mkdir(exist_ok=True)
+    Path(params.save_dir).mkdir(exist_ok=True)
 
     # Save weights
-    torch.save(model.state_dict(), os.path.join(mps.save_dir, "model_weights.pth"))
+    torch.save(model.state_dict(), os.path.join(params.save_dir, "model_weights.pth"))
 
     # Save config
-    with open(os.path.join(mps.save_dir, "config.json"), "w") as f:
+    with open(os.path.join(params.save_dir, "config.json"), "w") as f:
         json.dump(clean_config_dict(model.cfg.to_dict()), f, indent=2)
 
-    print(f"Model saved to {mps.save_dir}")
+    print(f"Model saved to {params.save_dir}")
 
 
 if __name__ == "__main__":
@@ -219,6 +226,13 @@ if __name__ == "__main__":
         default="./config/full_model_rope.py",
         help="Path to the model parameters configuration file.",
     )
+    parser.add_argument(
+        "-w",
+        "--use_wandb",
+        action="store_true",
+        help="Enable logging to Weights & Biases.",
+    )
+
     args = parser.parse_args()
 
     config_path = args.config
@@ -231,4 +245,4 @@ if __name__ == "__main__":
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
-    main(module)
+    main(module, args.use_wandb)

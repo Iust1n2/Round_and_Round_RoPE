@@ -1,6 +1,6 @@
 # Architecture parameters for a transformer model
-n_layers = 4
-n_heads = 8
+n_layers = 2
+n_heads = 4
 d_model = 128
 d_head = 32
 d_mlp = 512
@@ -26,5 +26,6 @@ data_path = "data/training_data.txt"
 save_dir = "model/full_model_alibi"
 
 # WandB config
+use_wandb = True
 project_name = "round_and_round_rope"
 run_name = "full_model_alibi"
