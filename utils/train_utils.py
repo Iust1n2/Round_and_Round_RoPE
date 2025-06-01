@@ -20,16 +20,31 @@ def clean_config_dict(cfg):
 
 
 def logit_diff_score(logits, labels):
+    """
+    Args:
+        logits: Tensor of shape [batch, seq, vocab] — raw logits.
+        labels: Tensor of shape [batch, seq] — true class indices.
+
+    Returns:
+        Average logit difference between true class and highest incorrect class.
+    """
     # logits: [batch, seq, vocab], labels: [batch, seq]
-    # logit of true label - top incorrect logit
-    probs = torch.nn.functional.log_softmax(logits, dim=-1)
-    label_logits = probs.gather(-1, labels.unsqueeze(-1)).squeeze(-1)
-    top_logits, top_indices = probs.topk(2, dim=-1)
-    top_incorrect = torch.where(
+    # Extract logits for the correct labels
+    label_logits = logits.gather(-1, labels.unsqueeze(-1)).squeeze(-1)  # [batch, seq]
+
+    # Top-2 logits and their indices
+    top_logits, top_indices = logits.topk(2, dim=-1)  # [batch, seq, 2]
+
+    # Choose the incorrect top logit
+    top_incorrect_logits = torch.where(
         top_indices[..., 0] == labels, top_logits[..., 1], top_logits[..., 0]
-    )
-    logit_diff = (label_logits - top_incorrect).mean().item()
-    return logit_diff
+    )  # [batch, seq]
+
+    # Logit difference
+    logit_diff = label_logits - top_incorrect_logits  # [batch, seq]
+
+    # Average over batch and sequence
+    return logit_diff.mean().item()
 
 
 def load_dataset(filepath, tokenizer):
