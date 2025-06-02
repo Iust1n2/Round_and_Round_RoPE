@@ -1,15 +1,26 @@
 import os
 import pandas as pd
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Literal, Union
+
+import torch 
 from transformer_lens import HookedTransformer
+
 from auto_circuit.data import load_datasets_from_json
 from auto_circuit.prune_algos.mask_gradient import mask_gradient_prune_scores
-from auto_circuit.types import PruneScores, Edge, Node
+from auto_circuit.types import PruneScores, Edge, Node, AblationType
 from auto_circuit.visualize import node_name
-from auto_circuit.utils.graph_utils import patchable_model
+from auto_circuit.utils.graph_utils import patchable_model, patch_mode
 from auto_circuit.utils.patchable_model import PatchableModel
+from auto_circuit.utils.ablation_activations import src_ablations
 from auto_circuit.utils.misc import repo_path_to_abs_path
 from auto_circuit.visualize import draw_seq_graph
+from auto_circuit.utils.tensor_ops import (
+    correct_answer_proportion, 
+    correct_answer_greater_than_incorrect_proportion, 
+    batch_avg_answer_diff, 
+    batch_answer_diff_percents, 
+    correct_answer_greater_than_incorrect_proportion
+)
 
 from PIL import Image
 import matplotlib.pyplot as plt
@@ -21,13 +32,14 @@ pio.renderers.default = "svg"
 
 
 def auto_circuit_experiment(
-    model: HookedTransformer, device: str = "cuda", save_path: str = None
+    model: HookedTransformer, device: str = "cuda", score_threshold: int = None, save_path: str = None
 ) -> None:
     """
     Runs a circuit discovery experiment using **Edge Patching** with default config (Resample Ablation and slicing logits on the last position) on a given `HookedTransformer` model.
     The function computes attribution scores for both "last" and "next" datasets, visualizes the resulting graphs, and saves the figures.
     Args:
         model (HookedTransformer): The transformer model to analyze. Must be an instance of HookedTransformer.
+        score_threshold (int, optional): The minimum absolute value of the score for an edge to be be kept in the circuit visualzation. Defaults to None.
         device (str, optional): The device to run computations on (e.g., "cuda" or "cpu"). Defaults to "cuda".
         save_path (str, optional): The directory path where the resulting images will be saved. If None, images are saved in the project root.
 
@@ -46,10 +58,10 @@ def auto_circuit_experiment(
     base_dir = os.path.abspath(os.path.dirname(__file__))
     base_dir = os.path.abspath(os.path.join(base_dir, ".."))
     path_last = repo_path_to_abs_path(
-        os.path.join(base_dir, "data/succession_augmented_last_equal_len.json")
+        os.path.join(base_dir, "data/succession_augmented_last_big.json")
     )
     path_next = repo_path_to_abs_path(
-        os.path.join(base_dir, "data/succession_augmented_next_equal_len.json")
+        os.path.join(base_dir, "data/succession_augmented_next_big.json")
     )
 
     train_loader_last, _ = load_datasets_from_json(
@@ -58,8 +70,8 @@ def auto_circuit_experiment(
         device=device,
         prepend_bos=False,
         tail_divergence=False,
-        batch_size=1,
-        train_test_size=(13, 13),
+        batch_size=32,
+        train_test_size=(256, 256),
     )
     train_loader_next, _ = load_datasets_from_json(
         model=model,
@@ -67,8 +79,8 @@ def auto_circuit_experiment(
         device=device,
         prepend_bos=False,
         tail_divergence=False,
-        batch_size=1,
-        train_test_size=(13, 13),
+        batch_size=32,
+        train_test_size=(256, 256),
     )
 
     auto_model = patchable_model(
@@ -100,7 +112,7 @@ def auto_circuit_experiment(
     fig_last = draw_seq_graph(
         auto_model,
         attribution_scores_last,
-        score_threshold=3.5,
+        score_threshold=score_threshold,
         layer_spacing=True,
         orientation="v",
         display_ipython=False,
@@ -108,7 +120,7 @@ def auto_circuit_experiment(
     fig_next = draw_seq_graph(
         auto_model,
         attribution_scores_next,
-        score_threshold=3.5,
+        score_threshold=score_threshold,
         layer_spacing=True,
         orientation="v",
         display_ipython=False,
@@ -127,6 +139,126 @@ def auto_circuit_experiment(
         "attribution_scores_last": attribution_scores_last,
         "attribution_scores_next": attribution_scores_next,
     }
+
+
+def ablation_experiment(
+    model: HookedTransformer,
+    device: str,
+    phase: Literal['A', 'B'],
+    edges_sorted: List[Edge],
+    ablation_type: Literal['Zero, Resample'] = None,
+    how_many: Optional[int] = None,
+):
+    """
+    Runs an ablation experiment on a given HookedTransformer model by patching specified edges and evaluating the effect on model performance, compared with the un-patched model.
+
+    Args:
+        model (HookedTransformer): The transformer model to be ablated.
+        device (str): The device to run computations on (e.g., 'cpu' or 'cuda').
+        phase (Literal['A', 'B']): Phase of the experiment, either 'A' or 'B'.
+        edges_sorted (List[Edge]): List of edges sorted by attribution score (descending).
+        ablation_type (Literal['Zero', 'Resample'], optional): Type of ablation to perform. 
+            'Zero' sets activations to zero, 'Resample' replaces activations with resampled values.
+        how_many (Optional[int], optional): Number of top edges (by attribution) to keep unpatched; all others are patched. If None, all edges are patched.
+    Returns:
+        dict: Dictionary containing ablation metrics:
+            - "correct_answer_proportion": Proportion of correct answers after ablation.
+            - "correct_answer_greater_than_incorrect_proportion": Proportion where correct answer logits exceed incorrect ones.
+            - "batch_avg_answer_diff": Average difference between correct and incorrect answer logits (ablated).
+            - "batch_avg_answer_diff_clean": Average difference between correct and incorrect answer logits (clean/original model).
+    
+    Raises:
+        AssertionError: 
+            - If the model is not an instance of HookedTransformer or if the top edge is not found in the model's edge dictionary.
+            - If `ablation_type` is not one of the specified types.
+            - `how_many` must be a non-negative integer > 1 else it errors.
+    """
+    assert isinstance(
+        model, HookedTransformer
+    ), "Model must be an instance of HookedTransformer"
+
+    # path to the JSON datasets
+    base_dir = os.path.abspath(os.path.dirname(__file__))
+    base_dir = os.path.abspath(os.path.join(base_dir, ".."))
+    path_last = repo_path_to_abs_path(
+        os.path.join(base_dir, "data/succession_augmented_last_big.json")
+    )
+    path_next = repo_path_to_abs_path(
+        os.path.join(base_dir, "data/succession_augmented_next_big.json")
+    )
+    if phase == 'A':
+        train_loader, test_loader = load_datasets_from_json(
+            model=model,
+            path=path_last,
+            device=device,
+            prepend_bos=False,
+            tail_divergence=False,
+            batch_size=32,
+            train_test_size=(256, 256),
+        )
+    elif phase == 'B':
+        train_loader, test_loader = load_datasets_from_json(
+            model=model,
+            path=path_next,
+            device=device,
+            prepend_bos=False,
+            tail_divergence=False,
+            batch_size=32,
+            train_test_size=(256, 256),
+        )
+    
+    auto_model = patchable_model(
+        model,
+        factorized=True,
+        slice_output="last_seq",
+        separate_qkv=True,
+        kv_caches=(train_loader.kv_cache, test_loader.kv_cache), # this is needed else, patching will not work
+        device=device,
+    )
+    for batch in test_loader:
+        toks = batch.clean
+        answers = batch.answers
+        wrong_answers = batch.wrong_answers
+        answers = [(answers[i], wrong_answers[i]) for i in range(len(answers))]
+        answers = torch.tensor(answers, dtype=torch.long)
+        answers = answers.to(device)
+
+    if ablation_type == 'Zero':
+        ablations = src_ablations(auto_model, toks, AblationType.ZERO)
+
+    elif ablation_type == 'Resample':
+        ablations = src_ablations(auto_model, toks, AblationType.RESAMPLE)
+        
+    # quick sanity check if an edge is present
+    all_edge_strs = [str(edge) for edge in edges_sorted] # these are desceonding order by attribution score
+    found = any(
+        all_edge_strs[0] in subdict
+            for subdict in auto_model.edge_name_dict.values()
+        )
+    assert found, f"Edge '{all_edge_strs[0]}' not found in edge_name_dict"
+
+    # patch all edges except the ones with the highest attribution scores, specified by `how_many`
+    if how_many is not None:
+        patch_edges = [edge for edge in all_edge_strs if edge not in all_edge_strs[:how_many]]  
+    # print(f"Edges to patch: {patch_edges}")
+    
+    with patch_mode(auto_model, ablations, patch_edges):
+        patched_out = auto_model(toks)
+
+    for batch in test_loader:
+        clean_out = model(batch.clean)
+    
+    ablation_metrics = {
+        "correct_answer_proportion": correct_answer_proportion(
+            patched_out[:, -1, :], batch),
+        "correct_answer_greater_than_incorrect_proportion": correct_answer_greater_than_incorrect_proportion(
+            patched_out[:, -1, :], batch),
+        "batch_avg_answer_diff": batch_avg_answer_diff(
+            patched_out[:, -1, :], batch),
+        "batch_avg_answer_diff_clean": batch_avg_answer_diff(
+            clean_out[:, -1, :], batch),
+    }   
+    return ablation_metrics
 
 
 def get_real_edges(
@@ -170,7 +302,11 @@ def get_real_edges(
 
         real_edges.append(edge)
 
-    real_edges_sorted = sorted(real_edges, key=lambda e: (e.src.layer, e.src.name))
+    real_edges_sorted = sorted(
+        real_edges,
+        key=lambda e: attribution_scores[e.dest.module_name][e.patch_idx].item(),
+        reverse=True,
+    )
 
     print(
         f"No. of remaining edges with |score| ≥ {score_threshold}: {len(real_edges_sorted)}"
@@ -486,4 +622,65 @@ def plot_circuit_overlap_vs_accuracy(
     plt.legend()
     plt.grid(True)
     plt.savefig(os.path.join(save_dir, "edge_overlap_vs_accuracy.png"))
+    plt.close()
+
+
+def plot_circuit_ablation(
+    epochs: List[int],
+    circuit_ablation_logs: List[Dict],
+    save_dir: str = None,
+) -> None:
+    """
+
+
+    Args:
+        epochs: List of epoch numbers.
+        accuracies: List of task accuracies after each epoch.
+        circuit_ablation_logs: List of dictionaries with keys:
+            - "avg_logit_diff_after_patching_A"
+            - "avg_logit_diff_after_patching_B"
+            - "proportion_correct_after_patching_A"
+            - "proportion_correct_after_patching_B"
+        save_dir: Directory where to save the plots.
+    """
+    os.makedirs(save_dir, exist_ok=True)
+    # print(len(epochs), len(circuit_ablation_logs))
+    
+    def to_scalar(x):
+        if x is None:
+            return None
+        if isinstance(x, torch.Tensor):
+            return x.detach().cpu().item()
+        return float(x)
+
+    df = pd.DataFrame({
+        "Epoch": epochs,
+        "Average Logit Diff after patching A": [to_scalar(log["avg_logit_diff_after_patching_A"]) for log in circuit_ablation_logs],
+        "Average Logit Diff after patching B": [to_scalar(log["avg_logit_diff_after_patching_B"]) for log in circuit_ablation_logs],
+        "Proportion Correct after patching A": [to_scalar(log["proportion_correct_after_patching_A"]) for log in circuit_ablation_logs],
+        "Proportion Correct after patching B": [to_scalar(log["proportion_correct_after_patching_B"]) for log in circuit_ablation_logs],
+    })
+
+    # Plot: Logit Difference
+    plt.figure()
+    plt.plot(df["Epoch"], df["Average Logit Diff after patching A"], label="Average Logit Diff after patching A", marker="o")
+    plt.plot(df["Epoch"], df["Average Logit Diff after patching B"], label="Average Logit Diff after patching B", marker="o")
+    plt.xlabel("Epoch")
+    plt.ylabel("Average Logit Difference")
+    plt.title("Logit Difference after Circuit Ablation")
+    plt.legend()
+    plt.grid(True)
+    plt.savefig(os.path.join(save_dir, "logit_diff_vs_epoch.png"))
+    plt.close()
+
+    # Plot: Accuracy
+    plt.figure()
+    plt.plot(df["Epoch"], df["Proportion Correct after patching A"], label="Proportion Correct after patching A", marker="o")
+    plt.plot(df["Epoch"], df["Proportion Correct after patching B"], label="Proportion Correct after patching B", marker="o")
+    plt.xlabel("Epoch")
+    plt.ylabel("Proportion Correct")
+    plt.title("Accuracy after Circuit Ablation")
+    plt.legend()
+    plt.grid(True)
+    plt.savefig(os.path.join(save_dir, "accuracy_vs_epoch.png"))
     plt.close()
