@@ -1,11 +1,9 @@
 auto_circuit_exps/*
-data/__pycache__
 data/succession_augmented.json
 data/ioi_dataset.py
 # /data/*.json
 !data/succession_augmented_last_equal_len.json
 !data/succession_augmented_next_equal_len.json
-utils/__pycache__/*
 utils/path_patching.py
 utils/direct_logit_attribution.py
 garbage/*
@@ -15,3 +13,5 @@ model/
 wandb/
 package.json
 package-lock.json
+**/__pycache__
+auto_circuit_outputs_*

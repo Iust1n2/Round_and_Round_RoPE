@@ -16,6 +16,7 @@ from utils.train_utils import (
     load_dataset,
     compute_accuracy,
 )
+from utils.circuit_discovery import auto_circuit_experiment
 
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -78,6 +79,13 @@ def main(params, use_wandb):
     )
 
     model = HookedTransformer(config).to(DEVICE)
+    model.tokenizer = tokenizer
+    model.set_use_attn_result(True)
+    model.set_use_attn_in(True)
+    model.set_use_split_qkv_input(True)
+
+    if not params.attn_only:
+        model.set_use_hook_mlp_in(True)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=params.learning_rate)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=2, gamma=0.8)
@@ -144,11 +152,33 @@ def main(params, use_wandb):
                 if use_wandb:
                     wandb.log(
                         {
-                            "tokens_seen": tokens_seen,
+                            "train/tokens_seen": tokens_seen,
                             f"train/loss_{phase}": loss.item(),
                             f"train/logit_diff_{phase}": logit_diff,
-                            "epoch": epoch + 1,
-                            "train/phase": phase,
+                        }
+                    )
+
+            if use_wandb:
+                phase_id = "A" if phase.startswith("A") else "B"
+                save_path = f"auto_circuit_outputs_{params.run_name}_{phase_id}"
+
+                auto_circuit_experiment(
+                    model,
+                    device=DEVICE,
+                    save_path=save_path,
+                )
+
+                last_path = f"{save_path}/last.png"
+                next_path = f"{save_path}/next.png"
+                if os.path.exists(last_path) and os.path.exists(next_path):
+                    wandb.log(
+                        {
+                            f"auto_circuit/graph_last_after_{phase_id}": wandb.Image(
+                                last_path, caption=f"After Phase {phase_id}"
+                            ),
+                            f"auto_circuit/graph_next_after_{phase_id}": wandb.Image(
+                                next_path, caption=f"After Phase {phase_id}"
+                            ),
                         }
                     )
 
@@ -164,7 +194,7 @@ def main(params, use_wandb):
         if use_wandb:
             wandb.log(
                 {
-                    "epoch": epoch + 1,
+                    "train/epoch": epoch + 1,
                     "train/accuracy": train_acc,
                 }
             )
@@ -192,7 +222,6 @@ def main(params, use_wandb):
         if use_wandb:
             wandb.log(
                 {
-                    "epoch": epoch + 1,
                     "val/loss": avg_val_loss,
                     "val/accuracy": val_acc,
                     "val/logit_diff": avg_val_logit_diff,
@@ -213,7 +242,6 @@ def main(params, use_wandb):
         if use_wandb:
             wandb.log(
                 {
-                    "epoch": epoch + 1,
                     "train/avg_loss": avg_train_loss,
                     "train/avg_logit_diff": avg_train_logit_diff,
                 }
