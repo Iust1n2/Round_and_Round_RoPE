@@ -124,8 +124,8 @@ def main(params, use_wandb):
         total_logit_diff_A = total_logit_diff_B = 0
 
         attribution_scores = {}
+        ablation_metrics_A, ablation_metrics_B = None, None
 
-        model.train()
         for phase, train_loader in [
             ("A_last_token", last_train_loader),
             ("B_next_token", next_train_loader),
@@ -134,6 +134,8 @@ def main(params, use_wandb):
             phase_logit_diff = 0
 
             for inputs, labels in train_loader:
+                for param in model.parameters():
+                    param.requires_grad = True
                 logits = model(inputs)
                 logits_trimmed = logits[:, :-1]
                 labels_trimmed = labels[:, 1:]
@@ -218,6 +220,23 @@ def main(params, use_wandb):
                             ),
                         }
                     )
+
+                if ablation_metrics_A is not None and ablation_metrics_B is not None:
+                    log_file_path = os.path.join(params.save_dir, "ablation_experiment_log.txt")
+                    with open(log_file_path, "a") as f:
+                        f.write(f"\nEpoch {epoch + 1}\n")
+                        f.write("Remaining Edges with Scores (A):\n")
+                        f.write(str(ablation_metrics_A["remaining_edges_with_scores"]) + "\n\n")
+                        
+                        f.write("Patched Edges with Scores (A):\n")
+                        f.write(str(ablation_metrics_A["patched_edges_with_scores"]) + "\n\n")
+                        
+                        f.write("Remaining Edges with Scores (B):\n")
+                        f.write(str(ablation_metrics_B["remaining_edges_with_scores"]) + "\n\n")
+                        
+                        f.write("Patched Edges with Scores (B):\n")
+                        f.write(str(ablation_metrics_B["patched_edges_with_scores"]) + "\n")
+                        f.write("="*60 + "\n")
 
             avg_phase_loss = phase_loss / len(train_loader)
             avg_phase_logit_diff = phase_logit_diff / len(train_loader)

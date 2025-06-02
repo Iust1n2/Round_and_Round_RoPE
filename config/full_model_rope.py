@@ -32,4 +32,4 @@ project_name = "round_and_round_rope"
 run_name = "full_model_rope"
 
 # Auto Circuit configuration
-score_threshold = 4.5
+score_threshold = 3.5

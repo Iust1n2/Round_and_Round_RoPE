@@ -53,6 +53,10 @@ def auto_circuit_experiment(
     assert isinstance(
         model, HookedTransformer
     ), "Model must be an instance of HookedTransformer"
+    
+    model.eval()
+    for param in model.parameters():
+        param.requires_grad = False
 
     # path to the JSON datasets
     base_dir = os.path.abspath(os.path.dirname(__file__))
@@ -176,7 +180,11 @@ def ablation_experiment(
     assert isinstance(
         model, HookedTransformer
     ), "Model must be an instance of HookedTransformer"
-
+ 
+    model.eval()
+    for param in model.parameters():
+        param.requires_grad = False
+    
     # path to the JSON datasets
     base_dir = os.path.abspath(os.path.dirname(__file__))
     base_dir = os.path.abspath(os.path.join(base_dir, ".."))
@@ -215,6 +223,16 @@ def ablation_experiment(
         kv_caches=(train_loader.kv_cache, test_loader.kv_cache), # this is needed else, patching will not work
         device=device,
     )
+
+    attribution_scores: PruneScores = mask_gradient_prune_scores(
+        model=auto_model,
+        dataloader=train_loader,
+        official_edges=None,
+        grad_function="logit",
+        answer_function="avg_diff",
+        mask_val=0.0,
+    )
+
     for batch in test_loader:
         toks = batch.clean
         answers = batch.answers
@@ -231,6 +249,8 @@ def ablation_experiment(
         
     # quick sanity check if an edge is present
     all_edge_strs = [str(edge) for edge in edges_sorted] # these are desceonding order by attribution score
+    edge_str_to_obj = {str(edge): edge for edge in edges_sorted}
+
     found = any(
         all_edge_strs[0] in subdict
             for subdict in auto_model.edge_name_dict.values()
@@ -239,8 +259,21 @@ def ablation_experiment(
 
     # patch all edges except the ones with the highest attribution scores, specified by `how_many`
     if how_many is not None:
-        patch_edges = [edge for edge in all_edge_strs if edge not in all_edge_strs[:how_many]]  
-    # print(f"Edges to patch: {patch_edges}")
+        remaining_edge_strs = all_edge_strs[:how_many]
+        patch_edges = [e for e in all_edge_strs if e not in remaining_edge_strs]
+
+        remaining_edges_with_scores = []
+        patched_edges_with_scores = []
+
+        for edge_str in remaining_edge_strs:
+            edge = edge_str_to_obj[edge_str]
+            score = attribution_scores[edge.dest.module_name][edge.patch_idx].item()
+            remaining_edges_with_scores.append((edge_str, score))
+
+        for edge_str in patch_edges:
+            edge = edge_str_to_obj[edge_str]
+            score = attribution_scores[edge.dest.module_name][edge.patch_idx].item()
+            patched_edges_with_scores.append((edge_str, score))
     
     with patch_mode(auto_model, ablations, patch_edges):
         patched_out = auto_model(toks)
@@ -249,6 +282,8 @@ def ablation_experiment(
         clean_out = model(batch.clean)
     
     ablation_metrics = {
+        "remaining_edges_with_scores": remaining_edges_with_scores if how_many is not None else None,
+        "patched_edges_with_scores": patched_edges_with_scores if how_many is not None else None,
         "correct_answer_proportion": correct_answer_proportion(
             patched_out[:, -1, :], batch),
         "correct_answer_greater_than_incorrect_proportion": correct_answer_greater_than_incorrect_proportion(
