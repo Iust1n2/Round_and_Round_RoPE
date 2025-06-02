@@ -116,6 +116,7 @@ def main(params, use_wandb):
     accuracies = []
     circuit_overlap_logs = []
     circuit_ablation_logs = []
+    circuit_ablation_epochs = []
 
     print("Starting training...")
     for epoch in range(params.epochs):
@@ -180,6 +181,7 @@ def main(params, use_wandb):
                 attribution_scores[phase_id] = auto_circuit_experiment(
                     model,
                     device=DEVICE,
+                    score_threshold=params.score_threshold,
                     save_path=auto_circuit_save_path,
                 )
 
@@ -200,18 +202,11 @@ def main(params, use_wandb):
                     print_egdes=False,
                     return_edges=True,
                 )
-                ablation_metrics_A = ablation_experiment(model, phase=phase_id, device=DEVICE, edges_sorted=edges_A, ablation_type='Zero', how_many=2)
-                ablation_metrics_B = ablation_experiment(model, phase=phase_id, device=DEVICE, edges_sorted=edges_B, ablation_type='Zero', how_many=2)
-
-                ablation_metrics = {
-                    "epoch": epoch + 1,
-                    "avg_logit_diff_after_patching_A": ablation_metrics_A["batch_avg_answer_diff"],
-                    "avg_logit_diff_after_patching_B": ablation_metrics_B["batch_avg_answer_diff"],
-                    "proportion_correct_after_patching_A": ablation_metrics_A["correct_answer_proportion"],
-                    "proportion_correct_after_patching_B": ablation_metrics_B["correct_answer_proportion"],
-                }
-                circuit_ablation_logs.append(ablation_metrics)
-
+                if phase_id == "A":
+                    ablation_metrics_A = ablation_experiment(model, phase=phase_id, device=DEVICE, edges_sorted=edges_A, ablation_type='Zero', how_many=2)
+                elif phase_id == "B":
+                    ablation_metrics_B = ablation_experiment(model, phase=phase_id, device=DEVICE, edges_sorted=edges_B, ablation_type='Zero', how_many=2)
+                    
                 if os.path.exists(last_path) and os.path.exists(next_path):
                     wandb.log(
                         {
@@ -258,6 +253,15 @@ def main(params, use_wandb):
             }
 
             circuit_overlap_logs.append(circuit_metrics)
+
+            circuit_ablation_logs.append({
+                "epoch": epoch + 1,
+                "avg_logit_diff_after_patching_A": ablation_metrics_A["batch_avg_answer_diff"],
+                "avg_logit_diff_after_patching_B": ablation_metrics_B["batch_avg_answer_diff"],
+                "proportion_correct_after_patching_A": ablation_metrics_A["correct_answer_proportion"],
+                "proportion_correct_after_patching_B": ablation_metrics_B["correct_answer_proportion"],
+            })
+            circuit_ablation_epochs.append(epoch + 1)
 
         # --- Validation ---
         model.eval()
@@ -331,8 +335,7 @@ def main(params, use_wandb):
         )
         # Plot and log circuit ablation metrics
         plot_circuit_ablation(
-            epochs=range(params.epochs),
-            # phase=phase,
+            epochs=circuit_ablation_epochs,
             circuit_ablation_logs=circuit_ablation_logs,
             save_dir=params.save_dir,
         )

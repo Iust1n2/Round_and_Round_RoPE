@@ -18,7 +18,7 @@ rotary_base = 1000
 
 # Training parameters
 batch_size = 16
-epochs = 2
+epochs = 10
 learning_rate = 1e-3
 
 # Paths

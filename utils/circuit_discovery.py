@@ -32,13 +32,14 @@ pio.renderers.default = "svg"
 
 
 def auto_circuit_experiment(
-    model: HookedTransformer, device: str = "cuda", save_path: str = None
+    model: HookedTransformer, device: str = "cuda", score_threshold: int = None, save_path: str = None
 ) -> None:
     """
     Runs a circuit discovery experiment using **Edge Patching** with default config (Resample Ablation and slicing logits on the last position) on a given `HookedTransformer` model.
     The function computes attribution scores for both "last" and "next" datasets, visualizes the resulting graphs, and saves the figures.
     Args:
         model (HookedTransformer): The transformer model to analyze. Must be an instance of HookedTransformer.
+        score_threshold (int, optional): The minimum absolute value of the score for an edge to be be kept in the circuit visualzation. Defaults to None.
         device (str, optional): The device to run computations on (e.g., "cuda" or "cpu"). Defaults to "cuda".
         save_path (str, optional): The directory path where the resulting images will be saved. If None, images are saved in the project root.
 
@@ -111,7 +112,7 @@ def auto_circuit_experiment(
     fig_last = draw_seq_graph(
         auto_model,
         attribution_scores_last,
-        score_threshold=3.5,
+        score_threshold=score_threshold,
         layer_spacing=True,
         orientation="v",
         display_ipython=False,
@@ -119,7 +120,7 @@ def auto_circuit_experiment(
     fig_next = draw_seq_graph(
         auto_model,
         attribution_scores_next,
-        score_threshold=3.5,
+        score_threshold=score_threshold,
         layer_spacing=True,
         orientation="v",
         display_ipython=False,
@@ -626,7 +627,6 @@ def plot_circuit_overlap_vs_accuracy(
 
 def plot_circuit_ablation(
     epochs: List[int],
-    # phase: List[float],
     circuit_ablation_logs: List[Dict],
     save_dir: str = None,
 ) -> None:
@@ -644,31 +644,27 @@ def plot_circuit_ablation(
         save_dir: Directory where to save the plots.
     """
     os.makedirs(save_dir, exist_ok=True)
-    print(len(epochs), len(circuit_ablation_logs))
+    # print(len(epochs), len(circuit_ablation_logs))
     
-    df = pd.DataFrame(
-        {
-            "Epoch": epochs,
-            "Average Logit Diff after patching A": [
-                log["avg_logit_diff_after_patching_A"] for log in circuit_ablation_logs
-            ],
-            "Average Logit Diff after patching B": [
-                log["avg_logit_diff_after_patching_B"] for log in circuit_ablation_logs],
-                
-            "Proportion Correct after patching A": [
-                log["proportion_correct_after_patching_A"] for log in circuit_ablation_logs
-            ],
-            "Proportion Correct after patching B": [
-                log["proportion_correct_after_patching_B"] for log in circuit_ablation_logs
-            ],
-        }
+    def to_scalar(x):
+        if x is None:
+            return None
+        if isinstance(x, torch.Tensor):
+            return x.detach().cpu().item()
+        return float(x)
 
-    )
+    df = pd.DataFrame({
+        "Epoch": epochs,
+        "Average Logit Diff after patching A": [to_scalar(log["avg_logit_diff_after_patching_A"]) for log in circuit_ablation_logs],
+        "Average Logit Diff after patching B": [to_scalar(log["avg_logit_diff_after_patching_B"]) for log in circuit_ablation_logs],
+        "Proportion Correct after patching A": [to_scalar(log["proportion_correct_after_patching_A"]) for log in circuit_ablation_logs],
+        "Proportion Correct after patching B": [to_scalar(log["proportion_correct_after_patching_B"]) for log in circuit_ablation_logs],
+    })
 
     # Plot: Logit Difference
     plt.figure()
-    plt.plot(df["Epoch"], df["Logit Diff A"], label="Logit Diff A", marker="o")
-    plt.plot(df["Epoch"], df["Logit Diff B"], label="Logit Diff B", marker="o")
+    plt.plot(df["Epoch"], df["Average Logit Diff after patching A"], label="Average Logit Diff after patching A", marker="o")
+    plt.plot(df["Epoch"], df["Average Logit Diff after patching B"], label="Average Logit Diff after patching B", marker="o")
     plt.xlabel("Epoch")
     plt.ylabel("Average Logit Difference")
     plt.title("Logit Difference after Circuit Ablation")
@@ -679,8 +675,8 @@ def plot_circuit_ablation(
 
     # Plot: Accuracy
     plt.figure()
-    plt.plot(df["Epoch"], df["Accuracy A"], label="Accuracy A", marker="o")
-    plt.plot(df["Epoch"], df["Accuracy B"], label="Accuracy B", marker="o")
+    plt.plot(df["Epoch"], df["Proportion Correct after patching A"], label="Proportion Correct after patching A", marker="o")
+    plt.plot(df["Epoch"], df["Proportion Correct after patching B"], label="Proportion Correct after patching B", marker="o")
     plt.xlabel("Epoch")
     plt.ylabel("Proportion Correct")
     plt.title("Accuracy after Circuit Ablation")
