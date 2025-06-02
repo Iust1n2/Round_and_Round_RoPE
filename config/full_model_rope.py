@@ -30,3 +30,6 @@ save_dir = "model/full_model_rope"
 use_wandb = True
 project_name = "round_and_round_rope"
 run_name = "full_model_rope"
+
+# Auto Circuit configuration
+score_threshold = 4.5

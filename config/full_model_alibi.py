@@ -29,3 +29,6 @@ save_dir = "model/full_model_alibi"
 use_wandb = True
 project_name = "round_and_round_rope"
 run_name = "full_model_alibi"
+
+# Auto Circuit configuration
+score_threshold = 4.5

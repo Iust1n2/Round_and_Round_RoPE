@@ -16,7 +16,12 @@ from utils.train_utils import (
     load_dataset,
     compute_accuracy,
 )
-from utils.circuit_discovery import auto_circuit_experiment
+from utils.circuit_discovery import (
+    auto_circuit_experiment,
+    get_real_edges,
+    compute_circuit_overlap,
+    plot_circuit_overlap_vs_accuracy,
+)
 
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -106,10 +111,15 @@ def main(params, use_wandb):
             },
         )
 
+    accuracies = []
+    circuit_overlap_logs = []
+
     print("Starting training...")
     for epoch in range(params.epochs):
         total_loss_A = total_loss_B = 0
         total_logit_diff_A = total_logit_diff_B = 0
+
+        attribution_scores = {}
 
         model.train()
         for phase, train_loader in [
@@ -160,16 +170,18 @@ def main(params, use_wandb):
 
             if use_wandb:
                 phase_id = "A" if phase.startswith("A") else "B"
-                save_path = f"auto_circuit_outputs_{params.run_name}_{phase_id}"
-
-                auto_circuit_experiment(
-                    model,
-                    device=DEVICE,
-                    save_path=save_path,
+                auto_circuit_save_path = (
+                    f"auto_circuit_outputs_{params.run_name}_{phase_id}"
                 )
 
-                last_path = f"{save_path}/last.png"
-                next_path = f"{save_path}/next.png"
+                attribution_scores[phase_id] = auto_circuit_experiment(
+                    model,
+                    device=DEVICE,
+                    save_path=auto_circuit_save_path,
+                )
+
+                last_path = f"{auto_circuit_save_path}/last.png"
+                next_path = f"{auto_circuit_save_path}/next.png"
                 if os.path.exists(last_path) and os.path.exists(next_path):
                     wandb.log(
                         {
@@ -189,6 +201,7 @@ def main(params, use_wandb):
             )
 
         train_acc = compute_accuracy(model, full_train_loader, tokenizer, DEVICE)
+        accuracies.append(train_acc)
         print(f"Epoch {epoch+1} | Train Accuracy {train_acc:.4f}")
 
         if use_wandb:
@@ -198,6 +211,39 @@ def main(params, use_wandb):
                     "train/accuracy": train_acc,
                 }
             )
+
+            edges_A, remaining_edges_A = get_real_edges(
+                model,
+                attribution_scores["A"]["attribution_scores_last"],
+                score_threshold=params.score_threshold,
+                print_egdes=False,
+                return_edges=True,
+            )
+            edges_B, remaining_edges_B = get_real_edges(
+                model,
+                attribution_scores["B"]["attribution_scores_next"],
+                score_threshold=params.score_threshold,
+                print_egdes=False,
+                return_edges=True,
+            )
+
+            metrics = compute_circuit_overlap(
+                edges_A,
+                edges_B,
+                attribution_scores_A=attribution_scores["A"]["attribution_scores_last"],
+                attribution_scores_B=attribution_scores["B"]["attribution_scores_next"],
+                print_diffs=False,
+            )
+
+            circuit_metrics = {
+                "epoch": epoch + 1,
+                "node_intersection": metrics["node_intersection"],
+                "node_union": metrics["node_union"],
+                "edge_intersection": metrics["edge_intersection"],
+                "edge_union": metrics["edge_union"],
+            }
+
+            circuit_overlap_logs.append(circuit_metrics)
 
         # --- Validation ---
         model.eval()
@@ -246,7 +292,29 @@ def main(params, use_wandb):
                     "train/avg_logit_diff": avg_train_logit_diff,
                 }
             )
+
         scheduler.step()
+
+    if use_wandb:
+        plot_circuit_overlap_vs_accuracy(
+            epochs=range(params.epochs),
+            accuracies=accuracies,
+            circuit_overlap_logs=circuit_overlap_logs,
+            save_dir=params.save_dir,
+        )
+
+        wandb.log(
+            {
+                "auto_circuit/node_overlap_vs_accuracy": wandb.Image(
+                    f"{params.save_dir}/node_overlap_vs_accuracy.png",
+                    caption="Node Overlap vs Accuracy",
+                ),
+                "auto_circuit/edge_overlap_vs_accuracy": wandb.Image(
+                    f"{params.save_dir}/edge_overlap_vs_accuracy.png",
+                    caption="Edge Overlap vs Accuracy",
+                ),
+            }
+        )
 
     # Save directory
     Path(params.save_dir).mkdir(exist_ok=True)

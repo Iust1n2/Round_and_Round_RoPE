@@ -29,3 +29,6 @@ save_dir = "model/attn_only_rope"
 use_wandb = True
 project_name = "round_and_round_rope"
 run_name = "attn_only_rope"
+
+# Auto Circuit configuration
+score_threshold = 4.5

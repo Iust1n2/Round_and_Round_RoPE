@@ -1,5 +1,6 @@
 import os
-from typing import Optional, List
+import pandas as pd
+from typing import Optional, List, Dict
 from transformer_lens import HookedTransformer
 from auto_circuit.data import load_datasets_from_json
 from auto_circuit.prune_algos.mask_gradient import mask_gradient_prune_scores
@@ -122,9 +123,14 @@ def auto_circuit_experiment(
     fig_last.write_image(last_img_path, scale=1)
     fig_next.write_image(next_img_path, scale=1)
 
+    return {
+        "attribution_scores_last": attribution_scores_last,
+        "attribution_scores_next": attribution_scores_next,
+    }
+
 
 def get_real_edges(
-    auto_model: PatchableModel,
+    model: HookedTransformer,
     attribution_scores: PruneScores,
     score_threshold: int,
     print_egdes: bool = False,
@@ -142,9 +148,19 @@ def get_real_edges(
     """
     real_edges = []
 
+    auto_model = patchable_model(
+        model,
+        factorized=True,
+        slice_output="last_seq",
+        separate_qkv=True,
+        device="cuda",
+    )
+
     intervals = {list(auto_model.edge_dict.keys())[0]: (0, 1)}
     for seq_idx, _ in intervals.items():
         edge_set = set(auto_model.edge_dict[seq_idx])
+
+    print(attribution_scores.keys())
 
     for edge in edge_set:
         edge_score = attribution_scores[edge.dest.module_name][edge.patch_idx].item()
@@ -383,4 +399,91 @@ def save_comparison_plot(
     else:
         plt.savefig(output_path, dpi=dpi, bbox_inches="tight")
 
+    plt.close()
+
+
+def plot_circuit_overlap_vs_accuracy(
+    epochs: List[int],
+    accuracies: List[float],
+    circuit_overlap_logs: List[Dict],
+    save_dir: str = None,
+) -> None:
+    """
+    Plot bar charts showing node and edge overlaps vs task accuracy.
+
+    Args:
+        epochs: List of epoch numbers.
+        accuracies: List of task accuracies after each epoch.
+        circuit_overlap_logs: List of dictionaries with keys:
+            - "node_intersection"
+            - "node_union"
+            - "edge_intersection"
+            - "edge_union"
+        save_dir: Directory where to save the plots.
+    """
+    os.makedirs(save_dir, exist_ok=True)
+
+    df = pd.DataFrame(
+        {
+            "Epoch": epochs,
+            "Accuracy": accuracies,
+            "Edge Intersection": [
+                log["edge_intersection"] for log in circuit_overlap_logs
+            ],
+            "Edge Union": [log["edge_union"] for log in circuit_overlap_logs],
+            "Node Intersection": [
+                log["node_intersection"] for log in circuit_overlap_logs
+            ],
+            "Node Union": [log["node_union"] for log in circuit_overlap_logs],
+        }
+    )
+
+    # Plot 1: Node Overlap vs Accuracy
+    plt.figure(figsize=(10, 6))
+    plt.bar(
+        df["Accuracy"] - 0.01,
+        df["Node Union"],
+        width=0.02,
+        label="All Nodes",
+        alpha=0.5,
+    )
+    plt.bar(
+        df["Accuracy"],
+        df["Node Intersection"],
+        width=0.02,
+        label="Intersecting Nodes",
+        alpha=0.8,
+    )
+    plt.xlabel("Accuracy")
+    plt.ylabel("Number of Nodes")
+    plt.title("Node Overlap vs Task Accuracy")
+    plt.legend()
+    plt.grid(True)
+    plt.savefig(os.path.join(save_dir, "node_overlap_vs_accuracy.png"))
+    plt.close()
+
+    print(f"saving to {os.path.join(save_dir, 'node_overlap_vs_accuracy.png')}")
+
+    # Plot 2: Edge Overlap vs Accuracy
+    plt.figure(figsize=(10, 6))
+    plt.bar(
+        df["Accuracy"] - 0.01,
+        df["Edge Union"],
+        width=0.02,
+        label="All Edges",
+        alpha=0.5,
+    )
+    plt.bar(
+        df["Accuracy"],
+        df["Edge Intersection"],
+        width=0.02,
+        label="Intersecting Edges",
+        alpha=0.8,
+    )
+    plt.xlabel("Accuracy")
+    plt.ylabel("Number of Edges")
+    plt.title("Edge Overlap vs Task Accuracy")
+    plt.legend()
+    plt.grid(True)
+    plt.savefig(os.path.join(save_dir, "edge_overlap_vs_accuracy.png"))
     plt.close()
