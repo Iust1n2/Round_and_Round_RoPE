@@ -18,9 +18,11 @@ from utils.train_utils import (
 )
 from utils.circuit_discovery import (
     auto_circuit_experiment,
+    ablation_experiment,
     get_real_edges,
     compute_circuit_overlap,
     plot_circuit_overlap_vs_accuracy,
+    plot_circuit_ablation
 )
 
 
@@ -113,6 +115,7 @@ def main(params, use_wandb):
 
     accuracies = []
     circuit_overlap_logs = []
+    circuit_ablation_logs = []
 
     print("Starting training...")
     for epoch in range(params.epochs):
@@ -182,6 +185,33 @@ def main(params, use_wandb):
 
                 last_path = f"{auto_circuit_save_path}/last.png"
                 next_path = f"{auto_circuit_save_path}/next.png"
+
+                edges_A, remaining_edges_A = get_real_edges(
+                    model,
+                    attribution_scores[phase_id]["attribution_scores_last"],
+                    score_threshold=params.score_threshold,
+                    print_egdes=False,
+                    return_edges=True,
+                )
+                edges_B, remaining_edges_B = get_real_edges(
+                    model,
+                    attribution_scores[phase_id]["attribution_scores_next"],
+                    score_threshold=params.score_threshold,
+                    print_egdes=False,
+                    return_edges=True,
+                )
+                ablation_metrics_A = ablation_experiment(model, phase=phase_id, device=DEVICE, edges_sorted=edges_A, ablation_type='Zero', how_many=2)
+                ablation_metrics_B = ablation_experiment(model, phase=phase_id, device=DEVICE, edges_sorted=edges_B, ablation_type='Zero', how_many=2)
+
+                ablation_metrics = {
+                    "epoch": epoch + 1,
+                    "avg_logit_diff_after_patching_A": ablation_metrics_A["batch_avg_answer_diff"],
+                    "avg_logit_diff_after_patching_B": ablation_metrics_B["batch_avg_answer_diff"],
+                    "proportion_correct_after_patching_A": ablation_metrics_A["correct_answer_proportion"],
+                    "proportion_correct_after_patching_B": ablation_metrics_B["correct_answer_proportion"],
+                }
+                circuit_ablation_logs.append(ablation_metrics)
+
                 if os.path.exists(last_path) and os.path.exists(next_path):
                     wandb.log(
                         {
@@ -211,23 +241,7 @@ def main(params, use_wandb):
                     "train/accuracy": train_acc,
                 }
             )
-
-            edges_A, remaining_edges_A = get_real_edges(
-                model,
-                attribution_scores["A"]["attribution_scores_last"],
-                score_threshold=params.score_threshold,
-                print_egdes=False,
-                return_edges=True,
-            )
-            edges_B, remaining_edges_B = get_real_edges(
-                model,
-                attribution_scores["B"]["attribution_scores_next"],
-                score_threshold=params.score_threshold,
-                print_egdes=False,
-                return_edges=True,
-            )
-
-            metrics = compute_circuit_overlap(
+            overlap_metrics = compute_circuit_overlap(
                 edges_A,
                 edges_B,
                 attribution_scores_A=attribution_scores["A"]["attribution_scores_last"],
@@ -237,10 +251,10 @@ def main(params, use_wandb):
 
             circuit_metrics = {
                 "epoch": epoch + 1,
-                "node_intersection": metrics["node_intersection"],
-                "node_union": metrics["node_union"],
-                "edge_intersection": metrics["edge_intersection"],
-                "edge_union": metrics["edge_union"],
+                "node_intersection": overlap_metrics["node_intersection"],
+                "node_union": overlap_metrics["node_union"],
+                "edge_intersection": overlap_metrics["edge_intersection"],
+                "edge_union": overlap_metrics["edge_union"],
             }
 
             circuit_overlap_logs.append(circuit_metrics)
@@ -312,6 +326,26 @@ def main(params, use_wandb):
                 "auto_circuit/edge_overlap_vs_accuracy": wandb.Image(
                     f"{params.save_dir}/edge_overlap_vs_accuracy.png",
                     caption="Edge Overlap vs Accuracy",
+                ),
+            }
+        )
+        # Plot and log circuit ablation metrics
+        plot_circuit_ablation(
+            epochs=range(params.epochs),
+            # phase=phase,
+            circuit_ablation_logs=circuit_ablation_logs,
+            save_dir=params.save_dir,
+        )
+
+        wandb.log(
+            {
+                "auto_circuit/logit_diff_vs_epoch": wandb.Image(
+                    f"{params.save_dir}/logit_diff_vs_epoch.png",
+                    caption="Logit Difference After Patching vs Epoch"
+                ),
+                "auto_circuit/accuracy_vs_epoch": wandb.Image(
+                    f"{params.save_dir}/accuracy_vs_epoch.png",
+                    caption="Proportion Correct After Patching vs Epoch"
                 ),
             }
         )
